@@ -1,0 +1,12 @@
+{
+  "name": "ai-news-verification",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build",
+    "doctor": ".venv\\Scripts\\python.exe -m scripts.check_system",
+    "api": ".venv\\Scripts\\python.exe -m backend.app",
+    "test": ".venv\\Scripts\\python.exe -m pytest -q",
+    "start": ".venv\\Scripts\\python.exe -m waitress --listen=127.0.0.1:5000 --call backend.app:create_server_app"
+  }
+}
