@@ -1,0 +1,57 @@
+services:
+  - type: web
+    name: news-verification-app
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    # Paid compute and persistent storage; review the price before applying.
+    plan: standard
+    numInstances: 1
+    healthCheckPath: /api/health
+    disk:
+      name: trusted-models
+      mountPath: /app/models
+      sizeGB: 20
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: DATABASE_BACKEND
+        value: mongo
+      - key: SECRET_KEY
+        generateValue: true
+      - key: MONGODB_URI
+        sync: false
+      - key: MONGODB_DATABASE
+        value: veritas
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: MAIL_HOST
+        sync: false
+      - key: MAIL_PORT
+        value: "587"
+      - key: MAIL_USERNAME
+        sync: false
+      - key: MAIL_PASSWORD
+        sync: false
+      - key: MAIL_FROM
+        sync: false
+      - key: MAIL_USE_TLS
+        value: "true"
+      - key: MAIL_USE_SSL
+        value: "false"
+      - key: EVIDENCE_PROVIDER
+        value: public
+      - key: IMAGE_MODEL_PATH
+        value: models/image-v2/model.joblib
+      - key: TEXT_MODEL_PATH
+        value: models/text-continued-20261020
+      - key: TEMPORAL_MODEL_PATH
+        value: models/video-temporal/model.joblib
+      - key: AI_IMAGE_MODEL_PATH
+        value: models/ai-image
+      - key: AI_TEXT_MODEL_PATH
+        value: models/ai-text/model.joblib
+      - key: WHISPER_MODEL
+        value: models/whisper-tiny

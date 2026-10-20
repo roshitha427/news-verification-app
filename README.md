@@ -2,7 +2,9 @@
 
 **AI-Powered Fake News Detection and Verification System**
 
-React frontend, Flask API, MongoDB Atlas persistence, local PyTorch visual inference, BERT text classification, local evidence retrieval, Whisper transcription, and PDF reports. Detection runs on this computer; it does not call paid inference APIs. Deployment is deferred.
+React frontend, Flask API, MongoDB Atlas persistence, local PyTorch visual inference, BERT text classification, local evidence retrieval, Whisper transcription, and PDF reports. Detection uses locally installed models; it does not call paid inference APIs.
+
+[Deploy to Render](https://render.com/deploy?repo=https://github.com/roshitha427/news-verification-app) — see [RENDER.md](RENDER.md) for required server secrets, private model transfer, and launch checks. This setup link creates hosting; it is not a live app URL.
 
 ## Run on this computer
 
