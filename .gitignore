@@ -22,5 +22,6 @@ artifacts/
 .pytest-tmp/
 fakenews/
 SR-*.zip
+*.zip
 *.pem
 *.key

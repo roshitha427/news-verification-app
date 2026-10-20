@@ -76,11 +76,18 @@ def test_video_temporal_score_is_separate_from_frame_chart(app, tmp_path):
         return .81, {'name': 'Temporal fixture', 'version': 'video-v1', 'purpose': 'temporal',
             'scope': 'Temporal fixture scope', 'evaluation': {'accuracy': .93, 'test_count': 240}}
     analyzer.temporal = SimpleNamespace(ready=lambda: True, predict=predict)
+    analyzer.generation = SimpleNamespace(ready=lambda: True, predict=lambda images: (
+        [.6] * len(images), {'name': 'AI-origin fixture', 'version': 'ai-v1',
+                             'source_url': 'https://example.test/model'}))
     result = analyzer.analyze('video', '', path, 'en', [])
     assert calls == [(12, [.25]*12, 'image-v1')]
-    assert result['fake_percentage'] == 81
-    assert result['real_percentage'] == 19
-    assert result['temporal_assessment']['primary_score'] is True
-    assert all(frame['fake_percentage'] == 25 for frame in result['frames'])
+    assert result['fake_percentage'] == 60
+    assert result['real_percentage'] == 40
+    assert result['confidence'] == 60
+    assert 'average sampled-frame' in result['confidence_note']
+    assert result['temporal_assessment']['fake_percentage'] == 81
+    assert result['temporal_assessment']['primary_score'] is False
+    assert all(frame['visual_fake_percentage'] == 25 for frame in result['frames'])
+    assert all(frame['ai_percentage'] == 60 for frame in result['frames'])
     assert result['scope'] == 'Temporal fixture scope'
     assert not any('no trained temporal' in text for text in result['limitations'])

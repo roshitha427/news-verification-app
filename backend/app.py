@@ -104,6 +104,14 @@ def create_app(overrides=None):
         for name, url, description in DEFAULT_SOURCES:
             store.save('sources', dict(name=name, url=url, domain=urlparse(url).hostname.removeprefix('www.'),
                                        description=description, enabled=True))
+    # Enable newly imported source families for existing databases on restart.
+    # Never reset an administrator's saved enabled/disabled setting.
+    if (ROOT / 'models/current-affairs/evidence.sqlite').is_file():
+        for name, url, description in DEFAULT_SOURCES:
+            domain = urlparse(url).hostname.removeprefix('www.')
+            if domain in ('gov.in', 'nic.in') and not store.one('sources', {'domain': domain}):
+                store.save('sources', dict(name=name, url=url, domain=domain,
+                                           description=description, enabled=True))
     # The local executor cannot resume work after a process restart.
     for state in (('queued', 'analyzing') if app.config['RECOVER_INTERRUPTED_JOBS'] else ()):
         for report in store.find('reports', {'status': state}, limit=10000):
@@ -401,6 +409,55 @@ def create_app(overrides=None):
         if report.get('status') != 'complete':
             return report
         result = report.get('result') or {}
+        metrics_changed = False
+        if report.get('type') in ('image', 'video') and (result.get('media_origin') or {}).get('policy_version') != 1:
+            from backend.generation import media_origin_assessment
+            result['media_origin'] = media_origin_assessment(
+                result.get('ai_percentage'), result.get('ai_assessment') or {},
+                (result.get('media_inspection') or {}).get('visual_type', 'unclear'))
+            summary = result.get('report_summary') or {}
+            if summary.get('mode') == 'media_only' and result['media_origin']['verdict'] == 'inconclusive':
+                summary['headline'] = 'Origin inconclusive'
+                description = str(summary.get('summary') or '')
+                for old_label in ('The model classifies this as likely AI-generated.',
+                                  'The model did not flag this as AI-generated.'):
+                    description = description.replace(old_label, '').strip()
+                summary['summary'] = 'Image origin is inconclusive. ' + result['media_origin']['reason'] + ' ' + description
+            metrics_changed = True
+        if report.get('type') == 'text':
+            content = str(report.get('content') or '')
+            from ml.text_cleaning import clean_text
+            counts = {'word_count': len(clean_text(content).split()),
+                      'source_count': len((result.get('verification') or {}).get('evidence') or [])}
+            if result.get('text_metrics') != counts:
+                result['text_metrics'] = counts
+                metrics_changed = True
+            if (result.get('text_model_assessment') or {}).get('status') == 'claim_out_of_domain':
+                try:
+                    probability, card = analyzer.text(content)
+                    if probability is not None:
+                        assessment = analyzer._text_model_assessment(probability, card)
+                        result.update(fake_percentage=assessment['fake_percentage'],
+                                      real_percentage=assessment['real_percentage'], confidence=assessment['confidence'],
+                                      text_model_assessment=assessment,
+                                      metric_note='Short-text scores are experimental news-pattern signals, not fact-check verdicts.',
+                                      scope='Experimental short-text news-pattern classification; factual evidence is assessed separately.')
+                        models = [item for item in result.get('models', []) if item.get('status') != 'claim_out_of_domain']
+                        result['models'] = models + [card]
+                        for container in (result, result.get('report_summary') or {}):
+                            if 'limitations' in container:
+                                container['limitations'] = [note for note in container['limitations']
+                                    if not ('abstain' in note.lower() and 'classifier' in note.lower())]
+                                container['limitations'].append(result['metric_note'])
+                        if result.get('report_summary'):
+                            from backend.report_summary import _model_signal
+                            result['report_summary']['model_signal'] = _model_signal(result, 'text')
+                        metrics_changed = True
+                except Exception:
+                    app.logger.warning('Saved short-text metrics could not be refreshed; source verdict preserved.')
+        if metrics_changed:
+            report.update(result=result, metrics_updated_at=now())
+            store.save('reports', report)
         if (result.get('report_summary') or {}).get('schema_version', 0) >= 4:
             return report
 
@@ -426,7 +483,7 @@ def create_app(overrides=None):
                     claim,
                     report.get('language', 'en'),
                     app.config.get('GOOGLE_FACT_CHECK_API_KEY'),
-                    store.find('sources', {'enabled': True}),
+                    store.find('sources'),
                     provider=app.config.get('EVIDENCE_PROVIDER', 'local'),
                     evidence_path=app.config.get('EVIDENCE_MODEL_PATH'),
                 )
@@ -437,6 +494,8 @@ def create_app(overrides=None):
                 app.logger.warning('Evidence refresh failed while upgrading a saved report.')
 
         result['verification'] = verification
+        if kind == 'text' and result.get('text_metrics'):
+            result['text_metrics']['source_count'] = len(verification.get('evidence') or [])
         result['report_summary'] = summarize_report(
             claim, kind, result, verification,
             api_key=app.config.get('GEMINI_API_KEY'),
@@ -482,7 +541,7 @@ def create_app(overrides=None):
         if report['status'] != 'complete':
             abort(409, description='The report is not ready yet.')
         return send_file(BytesIO(report_pdf(report)), mimetype='application/pdf', as_attachment=True,
-                         download_name=f"veritas-{report['id'][:10]}.pdf")
+                         download_name=f"verification-report-{report['id'][:10]}.pdf")
 
     @app.post('/api/analyze')
     @protect()
@@ -525,12 +584,12 @@ def create_app(overrides=None):
                         abort(400, description='The image is invalid or exceeds 30 megapixels.')
             report = store.save('reports', dict(owner_id=g.user['id'], type=kind, language=language,
                 title=text[:110] if text else filename, content=text, filename=filename, status='queued', result=None))
-            enabled_sources = store.find('sources', {'enabled': True})
+            evidence_sources = store.find('sources')
             def run():
                 try:
                     report['status'] = 'analyzing'
                     store.save('reports', report)
-                    report['result'] = analyzer.analyze(kind, text, filepath, language, enabled_sources)
+                    report['result'] = analyzer.analyze(kind, text, filepath, language, evidence_sources)
                     report.update(status='complete', completed_at=now())
                 except Exception as exc:
                     logging.exception('Analysis failed for report %s', report['id'])

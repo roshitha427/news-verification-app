@@ -180,6 +180,23 @@ def test_gemini_verdict_without_matching_citations_is_rejected():
     assert result['gemini_analysis']['status'] == 'response_rejected'
 
 
+def test_unverified_insufficient_evidence_summary_can_have_no_citations():
+    response = model_response('unverified', summary='The retrieved excerpts do not settle the claim.')
+    with patch('backend.report_summary.requests.post', return_value=response):
+        result = summarize_report(CLAIM, 'text', {}, {'evidence': [review()]}, 'test-gemini-key-12345')
+    assert result['gemini_analysis']['status'] == 'completed'
+    assert result['verdict'] == 'unverified'
+    assert result['summary_source_ids'] == []
+
+
+def test_invented_summary_citation_still_rejected_for_unverified_claim():
+    response = model_response('unverified', summary_ids=[99])
+    with patch('backend.report_summary.requests.post', return_value=response):
+        result = summarize_report(CLAIM, 'text', {}, {'evidence': [review()]}, 'test-gemini-key-12345')
+    assert result['gemini_analysis']['status'] == 'response_rejected'
+    assert result['gemini_diagnostics']['validation_error'] == 'summary_citation_ids_invalid'
+
+
 def test_gemini_must_assess_every_claim_and_aggregate_consistently():
     claim = CLAIM + ' The Eiffel Tower is located in Berlin since 1889.'
     response = model_response('unverified', support=[1], claim_assessments=[

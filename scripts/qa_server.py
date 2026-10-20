@@ -17,7 +17,8 @@ if __name__=='__main__':
     os.close(handle)
     app=create_app({'APP_ENV':'development','DATABASE_BACKEND':'sqlite',
         'SQLITE_PATH':database_path,'SECRET_KEY':'local-browser-qa-only-session-key',
-        'SESSION_COOKIE_SECURE':False,'GOOGLE_FACT_CHECK_API_KEY':None,'WHISPER_MODEL':None,'EVIDENCE_PROVIDER':args.evidence_provider})
+        'SESSION_COOKIE_SECURE':False,'GOOGLE_FACT_CHECK_API_KEY':None,'GEMINI_API_KEY':None,
+        'MAIL_HOST':None,'MAIL_FROM':None,'WHISPER_MODEL':None,'EVIDENCE_PROVIDER':args.evidence_provider})
     store=app.extensions['store']
     if not store.one('sources',{'domain':'factly.in'}):
         store.save('sources',dict(name='Factly',url='https://factly.in',domain='factly.in',description='India · Fact checking',enabled=True))

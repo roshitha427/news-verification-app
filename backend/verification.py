@@ -23,6 +23,8 @@ DEFAULT_SOURCES = [
     ('National Portal of India', 'https://www.india.gov.in', 'India · Official information'),
     ('Legislative Department, Government of India', 'https://legislative.gov.in', 'India · Primary legal source'),
     ('India Code', 'https://www.indiacode.nic.in', 'India · Primary legal source'),
+    ('Indian government source corpus', 'https://gov.in', 'Imported HTTPS government documents; source snapshots, not live news'),
+    ('Indian NIC source corpus', 'https://nic.in', 'Imported HTTPS NIC documents; source snapshots, not live news'),
 ]
 
 
@@ -379,6 +381,15 @@ def verify_wikipedia(text):
 
 
 def verify(text, language, api_key, sources, provider='auto', evidence_path=None):
+    # An imported source corpus is searched before potentially slow public APIs.
+    # Keep explicit offline/disabled provider choices intact.
+    if provider not in ('none', 'local'):
+        from backend.current_affairs import search_current_affairs
+        corpus = search_current_affairs(text, sources)
+        if (corpus.get('evidence') and
+                corpus['evidence'][0].get('relevance_score', 0) >= .7):
+            corpus['providers'] = [{'name': corpus['provider'], 'status': corpus['provider_status']}]
+            return corpus
     result = _verify_core(text, language, api_key, sources, provider, evidence_path)
     # If GDELT DOC 2.0 is reachable but returns no matches, also search the
     # free fact-check archives and publisher RSS feeds so claims are not left

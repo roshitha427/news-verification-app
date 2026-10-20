@@ -6,12 +6,12 @@ import { api } from '../lib/api.js';
 import { analysisErrorMessage } from '../lib/analysisErrors.js';
 import { IconBadge } from './ui.jsx';
 
-function Metric({ title, value, icon: Icon, t, tone }) {
+function Metric({ title, value, icon: Icon, t, tone, count = false }) {
   const assessed = typeof value === 'number' && Number.isFinite(value);
   return <div className={`metric ${tone} ${assessed ? '' : 'metric-unavailable'}`}>
     <div className="metric-label"><Icon size={17}/><span>{title}</span></div>
-    <strong>{!assessed ? <span className="not-assessed">{t.notAssessed}</span> : <>{value.toFixed(1)}<small>%</small></>}</strong>
-    <div className="metric-track" aria-hidden="true">{assessed && <span style={{ width: `${Math.max(0, Math.min(100, value))}%` }}/>}</div>
+    <strong>{!assessed ? <span className="not-assessed">{t.notAssessed}</span> : count ? value.toLocaleString() : <>{value.toFixed(1)}<small>%</small></>}</strong>
+    {!count && <div className="metric-track" aria-hidden="true">{assessed && <span style={{ width: `${Math.max(0, Math.min(100, value))}%` }}/>}</div>}
   </div>;
 }
 
@@ -104,9 +104,7 @@ function ReportSummary({ summary, t }) {
 function TextModelAssessment({ assessment, metricNote }) {
   if (!assessment && !metricNote) return null;
   const assessed = assessment?.status === 'assessed';
-  const label = assessed
-    ? (assessment.verdict === 'fake' ? 'Fake / manipulated signal' : 'Real / authentic signal')
-    : 'Not assessed';
+  const label = assessed ? (assessment.experimental_input ? 'Experimental score' : 'Scored') : 'Not assessed';
   const accuracy = assessment?.evaluation?.accuracy;
   const count = assessment?.evaluation?.test_count;
   return <section className={`text-model-assessment ${assessed ? 'assessed' : 'unassessed'}`} aria-label="Text classifier output">
@@ -115,7 +113,6 @@ function TextModelAssessment({ assessment, metricNote }) {
       <strong>{label}</strong>
     </div>
     <p>{assessment?.reason || metricNote || 'The text classifier did not return a prediction for this report.'}</p>
-    {assessed && <p className="text-model-score">Fake/manipulated score: {assessment.fake_percentage.toFixed(1)}% · Model confidence: {assessment.confidence.toFixed(1)}%</p>}
     {assessment?.model && <small>Model: {assessment.model}{assessment.version ? ` · ${assessment.version}` : ''}</small>}
     {Number.isFinite(accuracy) && <small>Held-out dataset accuracy: {(accuracy * 100).toFixed(1)}%{Number.isFinite(count) ? ` on ${count} examples` : ''}. This measures that dataset, not fact-checking accuracy.</small>}
   </section>;
@@ -148,9 +145,10 @@ function MediaInspection({ inspection, origin }) {
   };
   const verdictLabels = {
     ai_generated: 'Likely AI-generated',
-    likely_real: 'Likely real / not flagged as AI-generated',
+    inconclusive: 'Origin inconclusive',
+    likely_real: 'Not flagged as AI-generated',
     classification_unavailable: 'Could not classify image origin',
-    likely_not_ai_generated: 'Likely real / not flagged as AI-generated',
+    likely_not_ai_generated: 'Not flagged as AI-generated',
     not_assessed: 'Could not classify image origin',
   };
   return <section className="media-inspection-card" aria-label="Image and video inspection">
@@ -171,6 +169,7 @@ function MediaInspection({ inspection, origin }) {
       </div>}
       {typeof origin?.score === 'number' ? <small>Experimental AI-origin estimate: {origin.score.toFixed(1)}%. This is a model score, not measured accuracy or proof.</small>
         : <small>The AI-origin classifier did not return a score for this upload.</small>}
+      {origin?.verdict === 'inconclusive' && <p>{origin.reason || 'The experimental model score cannot reliably establish image origin.'}</p>}
     </div>
   </section>;
 }
@@ -255,6 +254,20 @@ export default function Report({ report, t, lang, onNew }) {
     : savedReportSummary(result, refreshing);
   const mediaOnly = summary.mode === 'media_only';
   const isMedia = displayReport.type === 'image' || displayReport.type === 'video';
+  const textMetrics = result.text_metrics || {};
+  const wordCount = textMetrics.word_count ?? (displayReport.content || '').trim().split(/\s+/).filter(Boolean).length;
+  const sourceCount = textMetrics.source_count ?? (result.verification?.evidence || summary.sources || []).length;
+  const aiWriting = result.ai_assessment || {};
+  const aiWritingMinimum = aiWriting.min_words || 80;
+  const aiWritingNote = Number.isFinite(result.ai_percentage)
+    ? `The AI-writing detector reviews up to ${aiWriting.max_words || 800} words.`
+    : aiWriting.status === 'unsupported_language'
+      ? 'AI-writing scoring currently supports English only.'
+      : aiWriting.status === 'too_short' || wordCount < aiWritingMinimum
+        ? `AI-writing scoring needs at least ${aiWritingMinimum} English words; add more text to receive that estimate.`
+        : 'The AI-writing detector did not return a score for this submission.';
+  const mediaConfidence = result.confidence ?? (Number.isFinite(result.ai_percentage)
+    ? Math.max(result.ai_percentage, 100 - result.ai_percentage) : null);
   return <article className="report-card concise-report" aria-live="polite">
     <div className="report-heading"><span className="eyebrow">{t.result}</span><span className="saved-note"><CircleCheck size={13}/>{t.saved}</span></div>
     <div className="report-title-block">
@@ -267,13 +280,16 @@ export default function Report({ report, t, lang, onNew }) {
     {displayReport.type === 'text' && <TextModelAssessment assessment={result.text_model_assessment} metricNote={result.metric_note}/>}
     {isMedia ? <><div className="metric-grid media-metric-grid">
       <Metric title="AI-generated estimate" value={result.fake_percentage} icon={ScanLine} tone="coral" t={t}/>
-      <Metric title="Likely real estimate" value={result.real_percentage} icon={ShieldCheck} tone="green" t={t}/>
-    </div><p className="media-metric-note">{result.metric_note}</p></> : <div className="metric-grid">
-      <Metric title={t.fake} value={result.fake_percentage} icon={ScanLine} tone="coral" t={t}/>
-      <Metric title={t.authentic} value={result.real_percentage} icon={ShieldCheck} tone="green" t={t}/>
-      <Metric title={t.ai} value={result.ai_percentage} icon={Sparkles} tone="violet" t={t}/>
-      <Metric title={t.confidence} value={result.confidence} icon={Fingerprint} tone="blue" t={t}/>
+      <Metric title="Model confidence" value={mediaConfidence} icon={Fingerprint} tone="blue" t={t}/>
+    </div><p className="media-metric-note">{result.metric_note} {result.confidence_note || 'Confidence is the strongest model class score, not measured accuracy or factual certainty.'}</p></> : <div className="metric-grid">
+      <Metric title="AI-writing likelihood" value={result.ai_percentage} icon={Sparkles} tone="violet" t={t}/>
+      <Metric title="Real-news pattern score" value={result.real_percentage} icon={ShieldCheck} tone="green" t={t}/>
+      <Metric title="Fake-news pattern score" value={result.fake_percentage} icon={ScanLine} tone="coral" t={t}/>
+      <Metric title="Model confidence" value={result.confidence} icon={Fingerprint} tone="blue" t={t}/>
+      <Metric title="Words analyzed" value={wordCount} icon={FileText} tone="green" t={t} count/>
+      <Metric title="Source excerpts" value={sourceCount} icon={Search} tone="violet" t={t} count/>
     </div>}
+    {!isMedia && <p className="media-metric-note">AI-writing likelihood is a model estimate, not the percentage of words written by AI. Real-news and fake-news scores measure learned writing patterns, not verified factual accuracy. {aiWritingNote}</p>}
     <div className="report-bottom">
       <a className="button primary" href={`/api/reports/${displayReport.id}/pdf`} download={`verification-report-${displayReport.id.slice(0,10)}.pdf`}>
         <Download size={17}/>{t.download}

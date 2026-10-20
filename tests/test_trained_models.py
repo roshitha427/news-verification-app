@@ -31,9 +31,10 @@ def test_trained_visual_model_is_used_by_api(client, app):
     report = wait_report(client,response.json['id'])
     assert report['status']=='complete'
     result=report['result']
-    assert result['fake_percentage']==round(expected[0]*100,1)
+    assert result['visual_model_assessment']['fake_percentage']==round(expected[0]*100,1)
     assert result['models'][0]['version']==card['version']
-    assert abs(result['fake_percentage']+result['real_percentage']-100)<.11
+    assert abs(result['visual_model_assessment']['fake_percentage']+result['visual_model_assessment']['real_percentage']-100)<.11
+    assert result['fake_percentage'] is None
     assert result['ai_percentage'] is None
 
 
@@ -53,12 +54,20 @@ def test_trained_bert_model_is_used_by_api(client,app):
 
 
 @pytest.mark.skipif(not (TEXT/'model-card.json').is_file(),reason='BERT artifact not yet generated')
-def test_short_current_claim_abstains_from_article_classifier(app):
+@pytest.mark.parametrize('content', [
+    'Who is the current Prime Minister of Andhra Pradesh?',
+    'India gained independence on 15 August 1947.',
+])
+def test_short_text_gets_experimental_scores_separate_from_truth(app, content):
     analyzer=app.extensions['analyzer']
     analyzer.config['TEXT_MODEL_PATH']=str(TEXT)
-    probability,card=analyzer.text('Who is the current Prime Minister of Andhra Pradesh?')
-    assert probability is None
-    assert card['status']=='claim_out_of_domain'
+    probability,card=analyzer.text(content)
+    assert probability is not None and 0 <= probability <= 1
+    assert card['status']=='ready'
+    assert card['experimental_input'] is True
+    assessment = analyzer._text_model_assessment(probability, card)
+    assert assessment['status'] == 'assessed'
+    assert 'experimental' in assessment['reason']
 
 
 @pytest.mark.skipif(not (TEXT/'model-card.json').is_file(),reason='BERT artifact not yet generated')
@@ -93,6 +102,7 @@ def test_video_reuses_the_visual_classifier_and_aggregates_frames(client,app,tmp
     assert report['status']=='complete'
     result=report['result']
     assert len(result['frames'])==2
-    assert abs(result['fake_percentage']-np.mean([f['fake_percentage'] for f in result['frames']]))<.11
+    assert abs(result['visual_model_assessment']['fake_percentage']-np.mean([f['visual_fake_percentage'] for f in result['frames']]))<.11
+    assert result['fake_percentage'] is None
     model_card = json.loads(VISUAL.with_name('model-card.json').read_text(encoding='utf8'))
     assert result['models'][0]['version'] == model_card['version']

@@ -84,7 +84,40 @@ The command asks for a name, email, and password privately. There are no default
 
 ## How to interpret results
 
-**Fake/real percentages** are complementary class probabilities within the installed model's training task. They are not percentages of false sentences or proof of an event. **AI-generated percentage** is independent: images and sampled frames use an experimental, uncalibrated pretrained model score; writing remains unassessed. This project's independent AI-generation accuracy is not measured. **Confidence** is the model's strongest class probability after its saved calibration step; **accuracy** is measured against labeled test examples. They are not interchangeable, and calibration quality differs by model. See [EVALUATION.md](EVALUATION.md) for measured accuracy and calibration error.
+Text reports show separate fake-news and real-news pattern scores, an AI-writing
+likelihood, and the model's strongest news class score as confidence, alongside
+word and source-excerpt counts. The AI-writing metric is always visible; it
+explains when a score is unavailable. It requires at least 80 English words and
+reviews up to 800 words, and does not estimate the fraction of words written by
+AI. Short English claims and
+questions receive experimental scores; the article benchmark does not validate
+their factual truth. Unsupported scripts and failed/uninstalled models keep
+their scores unavailable rather than inventing percentages. Their counts and
+source-based assessment remain visible. AI-writing likelihood and real-news
+pattern scores are separate: either human or AI-written content can contain
+true or false information.
+
+Image and video reports show an AI-generation estimate and model confidence,
+without a redundant complementary "real/authentic" percentage. Media confidence
+is the larger of the two AI-origin class scores; video first averages the sampled
+frame predictions. It is uncalibrated and is not measured accuracy, proof of
+origin, or certainty that a news claim is true. PDF exports use the same labels.
+The installed image detector is not locally validated, so its scores produce
+**Origin inconclusive**, even when its raw AI score is high. A high experimental
+score must not be presented as a reliable origin classification. Saved image
+and video reports receive this correction when opened or exported; source-based
+claim verdicts are preserved. This reporting correction does not retrain or
+improve the detector's underlying accuracy.
+
+**News-pattern scores** describe the installed classifier's training task, not
+the percentage of false sentences or proof of an event. **AI-generation
+estimates** describe a separate task; the text detector runs only on supported
+inputs of sufficient length, and the image/frame detector is experimental and
+uncalibrated. **Confidence** is a model class score; **accuracy** is measured
+against labeled test examples. They are not interchangeable. Text calibration
+was fitted on the article validation set, and does not establish calibrated
+confidence on short questions. See [EVALUATION.md](EVALUATION.md) for measured
+accuracy, calibration errors, and domain limitations.
 
 **Evidence verdicts** are separate from model classifications. Text submissions are split into at most five candidate claims and each claim is searched separately. GDELT DOC 2.0 searches a rolling three-month news window; fact-check publisher archives and feeds provide additional coverage. The system fetches bounded excerpts from enabled HTTPS sources when available, then ranks them for claim relevance and rejects numeric mismatches before summarization. Gemini receives the claim-specific excerpts, source URLs and metadata and returns a schema-constrained TRUE, FALSE, or UNVERIFIED assessment with source IDs. The backend validates claim coverage, cited IDs, relevance, source type, verdicts and aggregation. Invalid responses fall back to the deterministic assessment. Without Gemini, deterministic TRUE/FALSE still requires a close match to a published fact-check with a clear rating. Conflicting reviews or insufficient evidence remain UNVERIFIED. Search results are not proof: confirm the linked original pages, especially when the report says metadata only or a page could not be retrieved.
 
@@ -119,17 +152,43 @@ Text data comes from the [ISOT corpus](https://onlineacademiccommunity.uvic.ca/i
 
 The compact [BERT checkpoint](https://huggingface.co/prajjwal1/bert-tiny) makes real transformer fine-tuning practical on this CPU. The generic script also supports larger BERT checkpoints when suitable compute is available. No subject/date label columns are passed as model inputs. Reports use only locally installed checkpoints; no news text is sent to Hugging Face at inference.
 
-The selected local BERT artifact uses the first completed epoch checkpoint (`checkpoint-823`), chosen after reaching 98.35% validation accuracy. The initial three-epoch run was stopped during the second epoch; the saved first-epoch checkpoint was calibrated and tested separately. Its actual training state and metrics are retained. To finalize a completed checkpoint explicitly:
+The original local BERT artifact under `models/text` uses the first completed
+epoch checkpoint (`checkpoint-823`), which reached 98.35% validation accuracy.
+On 20 October 2026, two additional epochs produced
+`models/text-continued-20261020`, with 98.63% validation accuracy and 98.48%
+diagnostic test accuracy. `backend/.env` selects this continued model after a
+backend restart; the original is preserved. See EVALUATION.md for scope and
+limitations. To finalize a completed checkpoint explicitly:
 
 ```powershell
 .\.venv\Scripts\python.exe -m ml.finalize_text --checkpoint models/text/checkpoint-823
 ```
 
+To continue training the installed English model, use a new output directory:
+
+```powershell
+.\.venv\Scripts\python.exe -u -m ml.train_text --train data/text/train.csv --validation data/text/validation.csv --test data/text/test.csv --base models/text --output models/text-continued --epochs 2 --batch-size 32 --max-length 192 --threads 2 --learning-rate 0.00001 --local-files-only
+```
+
+This starts from the installed weights with a fresh optimizer and scheduler. It
+keeps the existing data splits, measures the starting validation score, selects
+the best additional epoch by validation F1, and calibrates on validation before
+reporting diagnostic test metrics. Existing models and nonempty output
+directories are protected from overwriting. The candidate's model card records
+the comparison, training history, and split fingerprints. More epochs can
+overfit; compare validation F1 before switching `TEXT_MODEL_PATH` to a candidate,
+then restart the backend. Repeated test results on this historical corpus are
+not independent evidence of accuracy on current news or short claims.
+
 ## Local evidence model (optional offline mode)
 
 `EVIDENCE_PROVIDER=local` calls no external verification service. It fits character TF-IDF features on a versioned library of real fact-check records and retrieves source matches locally. Source links, publisher ratings, dates, corpus version and build time are preserved. It is a retrieval model, not an automatic current-truth classifier. Matches need review; missing coverage remains unverified.
 
-No production evidence corpus has been supplied yet, so the current library is explicitly **not configured**. See [DATASETS.md](DATASETS.md) for the input schema and training-data handoff. To build it when the source records arrive:
+The separate TF-IDF fact-check library remains **not configured**. An imported
+48,951-document government/NIC source corpus now provides local source search
+before public providers; see [DATASETS.md](DATASETS.md) for its snapshot dates,
+import decisions, and the IMMFND training experiment. To build the optional
+TF-IDF fact-check library from dated records:
 
 ```powershell
 .\.venv\Scripts\python.exe -m ml.build_evidence --input data/incoming/evidence.jsonl --version YOUR_VERSION

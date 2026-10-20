@@ -10,7 +10,7 @@ from backend.verification import verify_submission
 from ml.vision import VisualModel
 from ml.text_cleaning import clean_text, content_language
 from backend.speech import SpeechTranscriber
-from backend.generation import GenerationDetector
+from backend.generation import GenerationDetector, media_origin_assessment
 from backend.report_summary import filter_relevant_evidence, summarize_report
 from backend.local_evidence import evidence_ready
 from backend.media_inspection import inspect_media
@@ -76,10 +76,7 @@ class Analyzer:
             return None, {'name': card.get('name', 'BERT'), 'version': card.get('version', '1'),
                           'status': 'unsupported_language', 'evaluation': card.get('evaluation')}
         word_count = len(clean_text(text).split())
-        if word_count < 20 or (text.strip().endswith('?') and word_count < 80):
-            return None, {'name':card.get('name', 'BERT text classifier'), 'version':card.get('version', '1'),
-                          'status':'claim_out_of_domain', 'evaluation':card.get('evaluation'),
-                          'external_evaluations':card.get('external_evaluations', {})}
+        short_input = word_count < 20 or (text.strip().endswith('?') and word_count < 80)
         if card.get('fake_label') is None:
             raise ValueError('The text model must declare its fake_label in model-card.json.')
         with self.text_lock:
@@ -93,6 +90,8 @@ class Analyzer:
         evaluation = card.get('evaluation')
         return fake, {'name': card.get('name', 'BERT text classifier'), 'version': card.get('version', '1'),
                       'status': 'ready', 'evaluation': evaluation,
+                      'input_scope': 'short_text' if short_input else 'news_article',
+                      'experimental_input': short_input,
                       'requested_target_accuracy': self.target_accuracy,
                       'requested_target_met': bool(evaluation and evaluation.get('accuracy', 0) >= self.target_accuracy),
                       'external_evaluations': card.get('external_evaluations', {})}
@@ -118,6 +117,11 @@ class Analyzer:
             result['models'].append(card)
             self._text_domain_warning(result, card)
             result['scope'] = 'Text fake/real classification based on the installed training corpus. Independent evidence is required.'
+            if card.get('experimental_input'):
+                result['scope'] = 'Experimental news-pattern scoring of a short claim or question; factual truth is assessed separately using sources.'
+                result['metric_note'] = ('Short-text scores are experimental: this classifier was trained on news articles. '
+                    'Model confidence is its strongest class score, not measured accuracy or evidence that the claim is true.')
+                result['limitations'].append('Short claims and questions are outside the article benchmark. Their classifier scores do not verify current facts.')
             if card['status'] == 'unsupported_language':
                 result['limitations'].append('This text model was evaluated on English only. It abstains for Hindi, Telugu, and other unsupported scripts.')
                 result['metric_note'] = 'The text classifier was evaluated on English only, so it did not calculate fake/real scores or confidence for this language.'
@@ -185,6 +189,11 @@ class Analyzer:
                 probabilities, card = self.visual.predict(images)
                 frame_probabilities, frame_model_version = probabilities, card.get('version')
                 probability = float(np.mean(probabilities))
+                result['visual_model_assessment'] = {
+                    'status': 'ready', 'fake_percentage': round(probability * 100, 1),
+                    'real_percentage': round((1 - probability) * 100, 1),
+                    'scope': 'Dataset-specific manipulation signal, separate from AI origin and factual truth.',
+                }
                 result['models'].append(dict(card, status='ready'))
                 if card.get('evaluation'):
                     result['models'][-1].update(requested_target_accuracy=self.target_accuracy,
@@ -194,7 +203,8 @@ class Analyzer:
                 if card.get('evaluation', {}).get('accuracy', 0) < self.target_accuracy:
                     result['limitations'].append(f'The visual classifier did not meet the requested {self.target_accuracy * 100:.0f}% held-out accuracy target. Treat its scores as experimental.')
                 if kind == 'video':
-                    result['frames'] = [{'seconds': sec} for sec in timestamps]
+                    result['frames'] = [{'seconds': sec, 'visual_fake_percentage': round(score * 100, 1)}
+                                        for sec, score in zip(timestamps, probabilities)]
                 result['scope'] = card.get('scope', 'Dataset-specific fake/real visual classification. Does not determine whether the surrounding news is true.')
             else:
                 result['models'].append({'name': 'Shared visual classifier', 'version': 'not trained', 'status': 'not_configured'})
@@ -210,7 +220,12 @@ class Analyzer:
                         temporal_card.update(status='ready', requested_target_accuracy=self.target_accuracy,
                             requested_target_met=temporal_card['evaluation']['accuracy'] >= self.target_accuracy)
                         result['models'].append(temporal_card)
-                        result['temporal_assessment'] = {'status': 'ready', 'sampled_frames': len(images), 'primary_score': True}
+                        result['temporal_assessment'] = {
+                            'status': 'ready', 'sampled_frames': len(images), 'primary_score': False,
+                            'fake_percentage': round(probability * 100, 1),
+                            'real_percentage': round((1 - probability) * 100, 1),
+                            'scope': 'Temporal manipulation signal, separate from the AI-origin estimate.',
+                        }
                         result['scope'] = temporal_card['scope']
                         result['limitations'].extend(temporal_card.get('limitations', []))
                         result['limitations'].append('A separate learned consistency model also checked sampled frames. The AI-origin estimate remains separate; audio authenticity is not assessed.')
@@ -226,6 +241,7 @@ class Analyzer:
                     ai_scores, ai_card = self.generation.predict(images)
                     result['ai_percentage'] = round(float(np.mean(ai_scores)) * 100, 1)
                     result['ai_assessment'] = {'status': 'experimental', 'calibrated': False,
+                        'locally_validated': ai_card.get('locally_validated') is True,
                         'scope': 'sampled_video_frames' if kind == 'video' else 'image',
                         'sample_count': len(ai_scores), 'source_url': ai_card['source_url']}
                     result['models'].append(dict(ai_card, status='ready'))
@@ -233,8 +249,10 @@ class Analyzer:
                     if kind == 'video':
                         result['limitations'].extend(ai_card.get('limitations', [])[2:])
                     if kind == 'video':
-                        result['frames'] = [{'seconds': sec, 'ai_percentage': round(score * 100, 1)}
-                                            for sec, score in zip(timestamps, ai_scores)]
+                        frame_results = result.get('frames') or [{'seconds': sec} for sec in timestamps]
+                        for frame_result, score in zip(frame_results, ai_scores):
+                            frame_result['ai_percentage'] = round(score * 100, 1)
+                        result['frames'] = frame_results
                     if visual_type in ('cartoon_or_illustration', 'screenshot_or_document'):
                         result['limitations'].append(
                             f'The AI-origin estimate for {visual_type.replace("_", " ")} is experimental and has not been independently validated for this media type.')
@@ -277,13 +295,15 @@ class Analyzer:
         if kind == 'text':
             result['text_model_assessment'] = self._text_model_assessment(probability, text_model_card or {})
         else:
-            # For media, the headline pair represents the AI-origin model only.
-            # Its output is not a calibrated confidence and says nothing about
-            # whether an accompanying news claim is true.
+            # Media confidence is the strongest class probability after averaging
+            # frame scores. It is uncalibrated and separate from factual truth.
             ai_score = result.get('ai_percentage')
             result['fake_percentage'] = ai_score
             result['real_percentage'] = None if ai_score is None else round(100 - ai_score, 1)
-            result['confidence'] = None
+            result['confidence'] = None if ai_score is None else round(max(ai_score, 100 - ai_score), 1)
+            result['confidence_note'] = ('Model confidence is the strongest AI-origin class score. '
+                'It is uncalibrated and is not measured accuracy or factual certainty.'
+                + (' Video confidence uses the average sampled-frame prediction.' if kind == 'video' else ''))
             result['metric_note'] = ('The model estimates AI generation from visual patterns. This score is experimental, not calibrated accuracy or proof of origin.'
                                      if ai_score is not None else
                                      'The AI-origin model could not assess this upload, so no real/AI estimate is shown.')
@@ -304,23 +324,22 @@ class Analyzer:
             claim = '\n'.join(dict.fromkeys(part for part in claim_parts if part))[:12000]
 
             visual_type = inspection.get('visual_type', 'unclear')
-            media_verdict = ('ai_generated' if ai_score >= 50 else 'likely_real') if isinstance(ai_score, (int, float)) else 'classification_unavailable'
-            result['media_origin'] = {
-                'status': (result.get('ai_assessment') or {}).get('status', 'not_assessed'),
-                'verdict': media_verdict, 'score': ai_score, 'visual_type': visual_type,
-            }
+            result['media_origin'] = media_origin_assessment(ai_score, result.get('ai_assessment') or {}, visual_type)
+            media_verdict = result['media_origin']['verdict']
             result['media_content_mode'] = ('claim_review' if claim else
                                             'text_detected' if extracted_text or transcript else 'visual_only')
             result['claim_text'] = claim
             if not claim:
                 description = str(inspection.get('description') or '').strip()
                 visual_artifacts = str(inspection.get('visual_artifacts') or '').strip()
-                if ai_score is None:
+                if media_verdict == 'inconclusive':
+                    origin_label = 'Image origin is inconclusive. ' + result['media_origin']['reason']
+                elif ai_score is None:
                     origin_label = 'Image origin could not be classified.'
                 elif ai_score >= 50:
                     origin_label = 'The model classifies this as likely AI-generated.'
                 else:
-                    origin_label = 'The model classifies this as likely real (not flagged as AI-generated).'
+                    origin_label = 'The model did not flag this as AI-generated.'
                 summary_parts = [origin_label]
                 if description:
                     summary_parts.append(description)
@@ -335,8 +354,9 @@ class Analyzer:
                 result['verification'] = {'status': 'not_applicable', 'provider_status': 'not_run', 'evidence': []}
                 result['report_summary'] = {
                     'schema_version': 5, 'mode': 'media_only',
-                    'headline': ('Likely AI-generated' if ai_score is not None and ai_score >= 50 else
-                                 'Likely real' if ai_score is not None else 'Origin classification unavailable'),
+                    'headline': ('Origin inconclusive' if media_verdict == 'inconclusive' else
+                                 'Likely AI-generated' if ai_score is not None and ai_score >= 50 else
+                                 'Not flagged as AI-generated' if ai_score is not None else 'Origin classification unavailable'),
                     'summary': ' '.join(summary_parts),
                     'reason': result['metric_note'],
                 }
@@ -364,6 +384,9 @@ class Analyzer:
         if filepath:
             with open(filepath, 'rb') as media:
                 result['sha256'] = hashlib.file_digest(media, 'sha256').hexdigest()
+        if kind == 'text':
+            result['text_metrics'] = {'word_count': len(clean_text(text).split()),
+                'source_count': len((result.get('verification') or {}).get('evidence') or [])}
         return result
 
     @staticmethod
@@ -398,13 +421,15 @@ class Analyzer:
         fake = round(probability * 100, 1)
         real = round((1 - probability) * 100, 1)
         confidence = round(max(probability, 1 - probability) * 100, 1)
-        favored = 'fake/manipulated' if probability >= 0.5 else 'real/authentic'
         return {
             'status': 'assessed', 'model': model, 'version': card.get('version'),
             'verdict': 'fake' if probability >= 0.5 else 'authentic',
             'fake_percentage': fake, 'real_percentage': real, 'confidence': confidence,
-            'reason': (f'The classifier favored the {favored} class with {confidence:.1f}% model confidence. '
-                       'This is a learned text-pattern signal, not a fact-check of the claim.'),
+            'experimental_input': bool(card.get('experimental_input')),
+            'reason': (f'The news-pattern score is {fake:.1f}% with {confidence:.1f}% model confidence. '
+                       'This is a learned text-pattern signal, not a fact-check of the claim.'
+                       + (' This short input is outside the article benchmark; its score is experimental.'
+                          if card.get('experimental_input') else '')),
             'evaluation': card.get('evaluation'),
         }
 
@@ -415,7 +440,8 @@ class Analyzer:
         try:
             probability, card = self.ai_text.predict(text)
             if probability is None:
-                result['ai_assessment'] = {'status': card['status'], 'scope': 'text', 'min_words': card.get('min_words',80)}
+                result['ai_assessment'] = {'status': card['status'], 'scope': 'text', 'min_words': card.get('min_words',80),
+                    'observed_words': card.get('observed_words'), 'max_words': card.get('max_words',800)}
                 if card['status'] == 'too_short':
                     result['limitations'].append(f"The AI-writing model requires at least {card.get('min_words',80)} English words. Short-text authorship is not assessed.")
                 elif card['status'] == 'unsupported_language':
@@ -423,6 +449,8 @@ class Analyzer:
                 return
             result['ai_percentage'] = round(probability*100,1)
             result['ai_assessment'] = {'status': 'experimental', 'scope': 'text', 'calibrated': True,
+                'min_words': card.get('min_words',80), 'max_words': card.get('max_words',800),
+                'observed_words': card.get('observed_words'),
                 'sample_count': 1, 'source_url': card.get('dataset',{}).get('source_url', 'https://huggingface.co/datasets/Hello-SimpleAI/HC3'),
                 'benchmark_accuracy': card.get('evaluation',{}).get('accuracy'),
                 'domain_accuracy': card.get('domain_evaluation',{}).get('wiki_domain_holdout',{}).get('accuracy')}

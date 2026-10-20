@@ -103,9 +103,12 @@ def test_private_report_and_pdf_end_to_end(client, app):
     assert all(report['result'][k] is None for k in ('fake_percentage','real_percentage','ai_percentage','confidence'))
     assert report['result']['text_model_assessment']['verdict'] == 'not_assessed'
     assert report['result']['text_model_assessment']['reason']
+    assert report['result']['text_metrics']['word_count'] > 0
+    assert report['result']['text_metrics']['source_count'] == 0
     assert report['result']['verification']['status'] == 'unverified'
     pdf = client.get(f"/api/reports/{report['id']}/pdf")
     assert pdf.status_code == 200 and pdf.data.startswith(b'%PDF')
+    assert f"verification-report-{report['id'][:10]}.pdf" in pdf.headers['Content-Disposition']
     other = app.test_client()
     register(other, 'other@example.com')
     assert other.get('/api/reports').json['items'] == []
@@ -124,7 +127,7 @@ def test_image_validation_and_analysis(client):
     data=BytesIO()
     Image.new('RGB',(128,128),(100,120,80)).save(data,format='PNG')
     data.seek(0)
-    response=client.post('/api/analyze',data={'type':'image','text':'A photo claims this is true.','file':(data,'photo.png'),'language':'en'},headers=headers)
+    response=client.post('/api/analyze',data={'type':'image','text':'The city council approved the new transport budget on Monday.','file':(data,'photo.png'),'language':'en'},headers=headers)
     assert response.status_code == 202
     report=wait_report(client,response.json['id'])
     assert report['status']=='complete'
@@ -418,6 +421,32 @@ def test_image_requires_supported_decoded_format(client):
         headers={'X-CSRF-Token': auth['csrf_token']})
     assert response.status_code == 400
     assert client.get('/api/reports').json['items'] == []
+
+
+@pytest.mark.parametrize('mode', ['media_only', 'claim_review'])
+def test_saved_image_origin_is_corrected_without_changing_source_verdict(client, app, mode):
+    auth = register(client)
+    store = app.extensions['store']
+    report = store.save('reports', {
+        'owner_id': auth['user']['id'], 'type': 'image', 'status': 'complete', 'title': 'Old image',
+        'result': {'ai_percentage': 99.9, 'confidence': 99.9,
+                   'ai_assessment': {'status': 'experimental', 'calibrated': False},
+                   'media_origin': {'verdict': 'ai_generated', 'score': 99.9},
+                   'report_summary': {'schema_version': 5, 'mode': mode, 'verdict': 'false',
+                                      'headline': 'Likely AI-generated',
+                                      'summary': 'The model classifies this as likely AI-generated. A portrait.'}}})
+    updated = client.get('/api/reports/' + report['id']).json['result']
+    assert updated['media_origin']['verdict'] == 'inconclusive'
+    assert updated['ai_percentage'] == 99.9
+    assert updated['report_summary']['verdict'] == 'false'
+    if mode == 'media_only':
+        assert updated['report_summary']['headline'] == 'Origin inconclusive'
+        assert 'A portrait.' in updated['report_summary']['summary']
+        assert 'classifies this as likely AI-generated' not in updated['report_summary']['summary']
+    else:
+        assert updated['report_summary']['summary'] == report['result']['report_summary']['summary']
+    saved = store.one('reports', {'id': report['id']})
+    assert saved['result']['media_origin']['policy_version'] == 1
 
 
 def test_admin_cli_does_not_create_account_with_unusable_password(app):

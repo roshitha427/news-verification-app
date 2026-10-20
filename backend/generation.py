@@ -6,6 +6,21 @@ import threading
 from PIL import ImageOps
 
 
+def media_origin_assessment(score, assessment, visual_type='unclear'):
+    """An unvalidated classifier score cannot establish an image's origin."""
+    assessed = isinstance(score, (int, float)) and not isinstance(score, bool)
+    validated = assessment.get('locally_validated') is True
+    verdict = ('ai_generated' if score > 50 else 'likely_real' if score < 50 else 'inconclusive') \
+        if assessed and validated else 'inconclusive' if assessed else 'classification_unavailable'
+    reason = ('The detector has not been locally validated for origin classification. '
+              'Its experimental score cannot reliably distinguish a photograph from an AI-generated image.'
+              if assessed and not validated else
+              'The model score is not proof of origin.' if assessed else
+              'The AI-origin detector did not return a score.')
+    return {'policy_version': 1, 'status': assessment.get('status', 'not_assessed'),
+            'verdict': verdict, 'score': score, 'visual_type': visual_type, 'reason': reason}
+
+
 class GenerationDetector:
     def __init__(self, directory):
         self.directory = Path(directory) if directory else None

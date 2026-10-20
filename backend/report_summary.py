@@ -139,10 +139,9 @@ def _model_signal(result, kind='text'):
     elif result.get('confidence') is not None:
         score = result['fake_percentage']
         if isinstance(score, (int, float)):
-            favored = 'fake/manipulated' if score >= 50 else 'real/authentic'
-            label = 'visual classifier' if kind in ('image', 'video') else 'text classifier'
+            label = 'AI-origin model' if kind in ('image', 'video') else 'text classifier'
             parts.append(
-                f"The {label} favored the {favored} class (fake/manipulated score {score:.1f}%) "
+                f"The {label} returned a pattern score of {score:.1f}% "
                 f"with {result['confidence']:.1f}% model confidence. This is a model signal, "
                 'not evidence that the underlying news claim is true or false.'
             )
@@ -218,7 +217,10 @@ def _fallback(claim, kind, result, verification, assessment, gemini_status='not_
         limitations.append('Without a completed Gemini synthesis, the deterministic layer only settles close-matching fact-checks with clear ratings. Related reporting and classifier probabilities alone cannot settle a verdict.')
     if kind in ('image', 'video'):
         limitations.append('The verdict checks the supplied caption or transcript against sources. Image/video manipulation scores are separate and do not verify the news claim.')
-    if verification.get('provider') == 'Local evidence model':
+    if any(item.get('kind') == 'official_source_snapshot' for item in evidence):
+        limitations.append('Imported official pages are dated snapshots. Their collection date is not a publication date, and office holders or policies may have changed since collection.')
+        retrieval_method = 'Local search over imported official-source documents, with query-matched passages and original links.'
+    elif verification.get('provider') == 'Local evidence model':
         retrieval_method = 'TF-IDF retrieval over the administrator-built local fact-check corpus, followed by lexical relevance reranking.'
     else:
         retrieval_method = 'Claim-specific search over configured public archives or GDELT, followed by claim-term, value, and source-text relevance checks.'
@@ -293,21 +295,24 @@ def _fallback(claim, kind, result, verification, assessment, gemini_status='not_
     }
 
 
-def _summary_schema(claim_count, include_model_only=False):
+def _summary_schema(claim_count, include_model_only=False, source_count=None):
+    source_id = {'type': 'integer', 'minimum': 1}
+    if source_count:
+        source_id['maximum'] = source_count
     claim_item = {'type': 'object', 'properties': {
         'verdict': {'type': 'string', 'enum': ['true', 'false', 'unverified']},
         'reason': {'type': 'string'},
-        'supporting_source_ids': {'type': 'array', 'items': {'type': 'integer'}},
-        'contradicting_source_ids': {'type': 'array', 'items': {'type': 'integer'}},
+        'supporting_source_ids': {'type': 'array', 'items': dict(source_id)},
+        'contradicting_source_ids': {'type': 'array', 'items': dict(source_id)},
     }, 'required': ['verdict', 'reason', 'supporting_source_ids', 'contradicting_source_ids']}
     properties = {
         'verdict': {'type': 'string', 'enum': ['true', 'false', 'unverified']},
         'headline': {'type': 'string'}, 'summary': {'type': 'string'}, 'reason': {'type': 'string'},
-        'summary_source_ids': {'type': 'array', 'items': {'type': 'integer'}},
+        'summary_source_ids': {'type': 'array', 'items': dict(source_id)},
         'claim_assessments': {'type': 'array', 'items': claim_item,
                               'minItems': claim_count, 'maxItems': claim_count},
         'key_points': {'type': 'array', 'items': {'type': 'object', 'properties': {
-            'text': {'type': 'string'}, 'source_ids': {'type': 'array', 'items': {'type': 'integer'}},
+            'text': {'type': 'string'}, 'source_ids': {'type': 'array', 'items': dict(source_id)},
         }, 'required': ['text', 'source_ids']}, 'maxItems': 3},
     }
     required = ['verdict', 'headline', 'summary', 'reason', 'summary_source_ids',
@@ -477,6 +482,7 @@ def summarize_report(claim, kind, result, verification, api_key=None, model='gem
         f"Reliability class: {item.get('reliability') or source_reliability(item)}\n"
         f"Title: {item.get('title', '')}\n"
         f"Published: {item.get('published_at') or 'not provided'}; fact-check review date: {item.get('reviewed_at') or 'not provided'}; GDELT seen date: {item.get('seen_at') or 'not provided'}\n"
+        f"Imported source snapshot collected: {item.get('fetched_at') or 'not applicable'}. Collection is not publication; archived information may be outdated.\n"
         f"Rating: {item.get('rating') or 'not provided'}\n"
         f"Claim in article: {item.get('claim') or 'not provided'}\n"
         f"Original URL: {item.get('url') or 'not provided'}\n"
@@ -527,7 +533,8 @@ def summarize_report(claim, kind, result, verification, api_key=None, model='gem
         'Return JSON only with: verdict (true, false, or unverified), headline (short), summary '
         '(1-3 concise sentences, at most 500 characters), reason (at most 900 characters), '
         + model_only_schema +
-        'summary_source_ids (array of supplied numeric IDs; use an empty array if no sources were supplied), claim_assessments (one object for each '
+        'summary_source_ids (array of supplied numeric IDs; use an empty array if no sources were supplied '
+        'or the UNVERIFIED summary only states that the evidence is insufficient; never cite an unrelated source), claim_assessments (one object for each '
         'candidate claim, in the same order, with verdict, reason, supporting_source_ids, and '
         'contradicting_source_ids), and key_points (up to 3 objects with text and source_ids). A TRUE claim '
         'must cite at least one supporting source ID; a FALSE claim must cite at least one contradicting source ID. '
@@ -539,7 +546,8 @@ def summarize_report(claim, kind, result, verification, api_key=None, model='gem
         f'Unassessed statement count: {assessment.get("unassessed_claim_count", 0)}\n\n'
         f'Retrieved evidence records:\n{source_text}'
     )
-    schema = _summary_schema(len(candidate_claims), include_model_only=kind == 'text' and not sources)
+    schema = _summary_schema(len(candidate_claims), include_model_only=kind == 'text' and not sources,
+                             source_count=len(sources))
     parsed, generation_status, diagnostics = _generate_summary_payload(prompt, api_key, model, schema)
     if parsed is None:
         return _fallback(claim, kind, result, verification, assessment, generation_status, diagnostics)
@@ -612,7 +620,7 @@ def summarize_report(claim, kind, result, verification, api_key=None, model='gem
         return reject('overall_verdict_does_not_match_claims')
 
     summary_ids = _valid_source_ids(parsed.get('summary_source_ids'), len(sources))
-    if summary_ids is None or (sources and not summary_ids) or (not sources and summary_ids):
+    if summary_ids is None or (verdict != 'unverified' and not summary_ids) or (not sources and summary_ids):
         return reject('summary_citation_ids_invalid')
     for source_id in summary_ids:
         source = sources[source_id - 1]

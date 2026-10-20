@@ -17,10 +17,14 @@ test('switching text, image, and video clears the previous modality input', asyn
   await content.fill('The first text claim should not carry into an image or video check.');
 
   await page.getByRole('tab', { name: 'Image', exact: true }).click();
+  await expect(content).toHaveCount(0);
+  await page.getByRole('button', { name: 'Add optional claim or caption', exact: true }).click();
   await expect(content).toHaveValue('');
   await content.fill('This is an image caption that belongs only to this image check.');
 
   await page.getByRole('tab', { name: 'Video', exact: true }).click();
+  await expect(content).toHaveCount(0);
+  await page.getByRole('button', { name: 'Add optional claim or caption', exact: true }).click();
   await expect(content).toHaveValue('');
   await expect(page.getByText('This is an image caption that belongs only to this image check.', { exact: true })).toHaveCount(0);
 });

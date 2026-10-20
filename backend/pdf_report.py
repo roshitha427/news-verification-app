@@ -57,13 +57,21 @@ def report_pdf(report):
     media_only = (result.get('report_summary') or {}).get('mode') == 'media_only'
     rows = [['Measure', 'Result']]
     metric_rows = ([('AI-generated estimate', 'fake_percentage'),
-                    ('Likely real estimate', 'real_percentage')]
+                    ('Model confidence', 'confidence')]
                    if report.get('type') in ('image', 'video') else
-                   [('Fake / manipulated content', 'fake_percentage'), ('Real / authentic class', 'real_percentage'),
-                    ('AI-generated', 'ai_percentage'), ('Model confidence', 'confidence')])
+                   [('AI-writing likelihood', 'ai_percentage'), ('Real-news pattern score', 'real_percentage'),
+                    ('Fake-news pattern score', 'fake_percentage'), ('Model confidence', 'confidence')])
     for name, key in metric_rows:
         val = result.get(key)
+        if key == 'confidence' and val is None and report.get('type') in ('image', 'video'):
+            ai_score = result.get('ai_percentage')
+            if isinstance(ai_score, (int, float)):
+                val = max(ai_score, 100 - ai_score)
         rows.append([name, 'Not assessed' if val is None else f'{val:.1f}%'])
+    if report.get('type') == 'text':
+        text_metrics = result.get('text_metrics') or {}
+        rows.append(['Words analyzed', str(text_metrics.get('word_count', len(original.split())))])
+        rows.append(['Source excerpts', str(text_metrics.get('source_count', len((result.get('verification') or {}).get('evidence') or [])))])
     table = Table(rows, colWidths=[320, 175])
     table.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#11594e')),
                               ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
@@ -71,12 +79,20 @@ def report_pdf(report):
                               ('TOPPADDING', (0, 0), (-1, -1), 12),
                               ('LINEBELOW', (0, 0), (-1, -1), 0.5, colors.HexColor('#d9e5e1'))]))
     story.extend([table, Spacer(1, 18)])
+    if report.get('type') == 'text':
+        p('AI-writing likelihood is a model estimate, not the percentage of words written by AI. '
+          'Real-news and fake-news scores measure writing patterns, not verified factual accuracy.')
+        ai = result.get('ai_assessment') or {}
+        if ai.get('status') == 'too_short':
+            p(f"The AI-writing detector requires at least {ai.get('min_words', 80)} English words.")
+        elif ai.get('status') == 'unsupported_language':
+            p('The AI-writing detector currently supports English only.')
+        elif result.get('ai_percentage') is not None:
+            p(f"The AI-writing detector reviews up to {ai.get('max_words', 800)} words.")
     text_model = result.get('text_model_assessment') or {}
     if report.get('type') == 'text' and text_model:
         p('Local text classifier output', 'Heading2')
         p('Status: ' + str(text_model.get('status', 'not assessed')))
-        if text_model.get('verdict') and text_model['verdict'] != 'not_assessed':
-            p('Classifier signal: ' + str(text_model['verdict']).replace('_', ' ').upper())
         p(text_model.get('reason', 'The text classifier did not produce a prediction.'))
         evaluation = text_model.get('evaluation') or {}
         if evaluation.get('accuracy') is not None:
@@ -159,19 +175,31 @@ def report_pdf(report):
         p('Checked at: ' + verification.get('checked_at', 'Not checked'))
     if result.get('metric_note'):
         p(result['metric_note'], 'Heading3')
+    if result.get('confidence_note'):
+        p(result['confidence_note'])
     if result.get('observations'):
         p('Content observations', 'Heading2')
         for observation in result['observations']:
             p(f"{observation.get('label', 'Observation')}: {observation.get('value', '')}")
+    visual = result.get('visual_model_assessment') or {}
+    temporal = result.get('temporal_assessment') or {}
+    if visual.get('status') == 'ready' or temporal.get('status') == 'ready':
+        p('Separate experimental manipulation signals', 'Heading2')
+        if visual.get('status') == 'ready':
+            p(f"Visual manipulation model score: {visual['fake_percentage']:.1f}%. {visual.get('scope', '')}")
+        if temporal.get('status') == 'ready':
+            p(f"Temporal manipulation model score: {temporal['fake_percentage']:.1f}%. {temporal.get('scope', '')}")
     if result.get('frames'):
         p('Sampled video AI-origin estimates', 'Heading2')
         for frame in result['frames']:
             p(f"At {frame.get('seconds', '?')} seconds: AI-generated estimate "
               + (f"{frame['ai_percentage']:.1f}%" if frame.get('ai_percentage') is not None else 'not available'))
+            if frame.get('visual_fake_percentage') is not None:
+                p(f"Separate visual manipulation score: {frame['visual_fake_percentage']:.1f}%")
     for source_number, item in enumerate(verification.get('evidence', []), 1):
         p(f"Source [{source_number}]: {item.get('title', '')}", 'Heading3')
         for key in ['source_type', 'claim', 'publisher', 'reliability', 'rating', 'published_at',
-                    'reviewed_at', 'seen_at', 'retrieved_at', 'retrieval_status',
+                    'reviewed_at', 'seen_at', 'fetched_at', 'retrieved_at', 'retrieval_status',
                     'snippet', 'relationship']:
             p(f'{key}: {item.get(key, "")}')
         source_url = item.get('url', '')
@@ -214,9 +242,12 @@ def report_pdf(report):
         inspection = result.get('media_inspection') or {}
         origin = result.get('media_origin') or {}
         verdict_labels = {'ai_generated': 'Likely AI-generated', 'likely_real': 'Likely real / not flagged as AI-generated',
+                          'inconclusive': 'Origin inconclusive',
                           'classification_unavailable': 'Origin classification unavailable'}
         if origin.get('verdict'):
             p('AI-origin classification: ' + verdict_labels.get(origin['verdict'], 'Classification unavailable'))
+            if origin.get('reason'):
+                p(origin['reason'])
         if inspection.get('description'):
             p('Content description: ' + inspection['description'])
         if inspection.get('visual_artifacts'):

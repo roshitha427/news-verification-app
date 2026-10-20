@@ -9,7 +9,26 @@ These are local dataset evaluations, not accuracy guarantees for real-world clai
 | Learned temporal consistency classifier, DeepfakeTIMIT-style dataset | 480 clips | 240 | **86.67%** | 0.8954 | **Not met** |
 | Pooled four-group frozen CNN experiment | 32,000 | 20,905 | 64.94% | 0.6693 | Not met |
 | Native-resolution residual/frequency features, validation-selected head | 16,000 | 5,227 | 61.20% | 0.6893 | Not met; not selected |
-| Fine-tuned compact BERT, English ISOT articles | 26,316 | 5,640 | **98.10%** | 0.9788 | Met on this corpus |
+| Original one-epoch compact BERT, English ISOT articles | 26,316 | 5,640 | **98.10%** | 0.9788 | Met on this corpus |
+| Continued compact BERT, three total epochs, English ISOT articles | 26,316 | 5,640 | **98.48%** | 0.9829 | Met on this corpus |
+| IMMFND English claim-only adaptation, experimental | 502 | 254 | 56.30% | 0.5316 | Not met; not activated |
+
+On 20 October 2026, two additional epochs at learning rate 0.00001 improved the
+news model's validation accuracy from 98.35% to 98.63% and validation F1 from
+0.9816 to 0.9847. The selected candidate is retained under
+`models/text-continued-20261020`; `backend/.env` selects it after restart. The
+original model remains under `models/text`. Diagnostic test accuracy improved
+from 98.10% to 98.48% on the same 5,640 articles. This repeatedly inspected test
+is not an independent current-news benchmark. The new Brier score is 0.0127,
+expected calibration error 0.0062, and 95% accuracy interval 98.12–98.76%.
+
+The separate IMMFND claim experiment improved validation accuracy from 61.47%
+to 67.89%, but its 56.30% test accuracy does not justify replacing the news
+model. It is retained for research, with the supplied splits and source hashes.
+Current-affairs verification instead uses the imported official-source corpus.
+The supplied Andhra Pradesh CM claim returned FALSE with validated official
+source citations in a live Gemini smoke check; this single example is a
+functional check, not a measured current-affairs accuracy benchmark.
 
 The fine-tuned CNN with horizontal-flip test-time averaging and Platt calibration reached 76.09% accuracy on the diagnostic test split, up from 73.90% for the earlier inference setup. Balanced accuracy rose from 73.83% to 76.03%; Brier score improved from 0.2010 to 0.1855 and expected calibration error from 0.1519 to 0.1370. Real-class recall is still only 61.41%, and the model misses 1,005 of 2,604 real examples. The model remains experimental and below its 85% target. The calibration and flip averaging were selected using validation data, but this same test split was already used for the initial baseline, so an independent external set is still needed.
 
